@@ -1,5 +1,5 @@
 # FJSGCDDemo
-GCD的从入门到精通.    
+iOS GCD 从入门到放弃.    
 重点：  
 1.dispatch_queue_create(生成Dispatch Queue)     
 2.Main Dispatch Queue/Global Dispatch Queue    

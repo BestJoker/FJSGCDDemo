@@ -96,7 +96,7 @@
     //将文件分割成一块一块进行读取
     
 #pragma mark --  13.spatch_set_context与dispatch_set_finalizer_f
-
+    [self dispatchContextAndFinalizer];
     
     
 }
@@ -109,7 +109,7 @@
     //1).生成Serial Queue
     dispatch_queue_t serialQueue = dispatch_queue_create("一个标识,类似于一个名字", NULL);
     //2).生成Concurrent Queue
-    dispatch_queue_t concurrent = dispatch_queue_create("并行队列", NULL);
+    dispatch_queue_t concurrent = dispatch_queue_create("并行队列", DISPATCH_QUEUE_CONCURRENT);
 }
 
 

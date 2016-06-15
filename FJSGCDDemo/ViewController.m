@@ -34,6 +34,7 @@
      10.Dispatch Semaphore
      11.dispatch_once
      12.Dispatch I/O
+     13.spatch_set_context与dispatch_set_finalizer_f
      */
     
 #pragma mark -- 1.dispatch_queue_create(生成Dispatch Queue)
@@ -78,14 +79,14 @@
     [self dispatchApply];
     
 #pragma mark --  9.dispatch_suspend/dispatch_resume
-    /*
-     挂起函数：dispatch_suspend(queue); 被追加到Dispatch Queue中的尚未执行的处理停止
-     回复函数：dispatch_resume(queue)p; 继续执行
-     */
+    [self dispatchSuspendAndResume];
+    
 #pragma mark --  10.Dispatch Semaphore
     [self dispatchSemaphore];
     
 #pragma mark --  11.dispatch_once
+    //dispatch_once_t必须是全局或static变量
+    //这一条算是“老生常谈”了，但我认为还是有必要强调一次，毕竟非全局或非static的dispatch_once_t变量在使用时会导致非常不好排查的bug，正确的如下：
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
              // 初始化,一般用于单例中
@@ -93,6 +94,11 @@
     
 #pragma mark --  12.Dispatch I/O
     //将文件分割成一块一块进行读取
+    
+#pragma mark --  13.spatch_set_context与dispatch_set_finalizer_f
+
+    
+    
 }
 
 
@@ -145,8 +151,33 @@
 
 - (void)dispatchAfter
 {
-    //dispatch_after:想在3秒后执行（但是并不确定）
+    //dispatch_after:是延迟提交，不是延迟运行, 同时并不精确
+    //官方文档说明:Enqueue a block for execution at the specified time.
+    //Enqueue，就是入队，指的就是将一个Block在特定的延时以后，加入到指定的队列中，不是在特定的时间后立即运行！。
     //方法一
+    /*
+     #define NSEC_PER_SEC 1000000000ull
+     
+     #define USEC_PER_SEC 1000000ull
+     
+     #define NSEC_PER_USEC 1000ull
+     
+     - NSEC_PER_SEC，每秒有多少纳秒。
+     
+     - USEC_PER_SEC，每秒有多少毫秒。（注意是指在纳秒的基础上）
+     
+     - NSEC_PER_USEC，每毫秒有多少纳秒。
+     
+     关键词解释：
+     
+     - NSEC：纳秒。
+     
+     - USEC：微妙。
+     
+     - SEC：秒
+     
+     - PER：每
+     */
     dispatch_time_t time = dispatch_time(DISPATCH_TIME_NOW, 3ull * NSEC_PER_SEC);
     dispatch_after(time, dispatch_get_main_queue(), ^{
         NSLog(@"处理事情");
@@ -161,6 +192,28 @@
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         NSLog(@"处理事情");
     });
+    //注意:
+    //创建串行队列
+    dispatch_queue_t serialQueue = dispatch_queue_create("concurrent", DISPATCH_QUEUE_SERIAL);
+    //立即打印一条信息
+    NSLog(@"开始添加block");
+    
+    //提交一个block
+    dispatch_async(serialQueue, ^{
+        //让线程沉睡10s
+        [NSThread sleepForTimeInterval:10];
+        NSLog(@"第一个block完成");
+    });
+    
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(5 * NSEC_PER_SEC)),serialQueue, ^{
+        NSLog(@"Afterblock完成");
+    });
+    
+    /*
+     结果是: 开始添加block ->  第一个block完成 ->  Afterblock完成
+     从结果也验证了，dispatch_after只是延时提交block，并不是延时后立即执行。所以想用dispatch_after精确控制运行状态的朋友可要注意了~
+     */
+    
 }
 
 #pragma mark --  5.Dispatch Group
@@ -274,6 +327,19 @@
         NSLog(@"14");
     });
     
+    /*
+     dispatch_barrier_async的作用就是向某个队列插入一个block，当目前正在执行的block运行完成后，阻塞这个block后面添加的block，只运行这个block直到完成，然后再继续后续的任务，有点“唯我独尊”的感觉=。=
+     
+     值得注意的是：
+     
+     dispatchbarrier\(a)sync只在自己创建的并发队列上有效，在全局(Global)并发队列、串行队列上，效果跟dispatch_(a)sync效果一样。
+     
+     既然在串行队列上跟dispatch_(a)sync效果一样，那就要小心别死锁！
+     dispatch_barrier_sync(dispatch_get_main_queue(), ^{
+     NSLog(@"我是死锁");
+     });
+     */
+    
 }
 
 #pragma mark --  7.dispatch_sync
@@ -281,12 +347,22 @@
 - (void)dispatchSync
 {
     //7.dispatch_sync:同步（将Block同步到Dispatch Queue）中，在追加Block结束之前，dispatch_sync会一直等待（当前线程提醒）
-    
     dispatch_queue_t queue = dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH, 0);
     // 处理结束前不会返回
     dispatch_sync(queue, ^{
         NSLog(@"done");
     });
+    
+    //dispatch_sync导致的死锁
+    //涉及到多线程的时候，不可避免的就会有“死锁”这个问题，在使用GCD时，往往一不小心，就可能造成死锁，看看下面的“死锁”例子：
+    /*
+    //在main线程使用“同步”方法提交Block，必定会死锁。
+    dispatch_sync(dispatch_get_main_queue(), ^{
+        
+        NSLog(@"I am block...");
+        
+    });
+    */
     
 }
 
@@ -306,14 +382,100 @@
     dispatch_apply(10, queue, ^(size_t index) {
         NSLog(@"%zu",index);
     });
-    //在apply中使用主线程,会产生相互等待的死锁
-//    dispatch_apply(10, dispatch_get_main_queue(), ^(size_t index) {
-//        NSLog(@"%zu",index);
-//    });
+    //明明是提交到异步的队列去运行，但是“After apply”居然在apply后打印，也就是说，dispatch_apply将外面的线程（main线程）“阻塞”了！
+    //查看官方文档，dispatch_apply确实会“等待”其所有的循环运行完毕才往下执行=。=，看来要小心使用了。
+    /*
+     //在apply中使用主线程,会产生相互等待的死锁
+         dispatch_apply(10, dispatch_get_main_queue(), ^(size_t index) {
+            NSLog(@"%zu",index);
+        });
+
+     避免dispatch_apply的嵌套调用,否则也会产生死锁.
+     dispatch_queue_t queue = dispatch_queue_create("me.tutuge.test.gcd", DISPATCH_QUEUE_SERIAL);
+     
+     dispatch_apply(3, queue, ^(size_t i) {
+     
+     NSLog(@"apply loop: %zu", i);
+     
+     //再来一个dispatch_apply！死锁！
+     
+     dispatch_apply(3, queue, ^(size_t j) {
+     
+     NSLog(@"apply loop inside %zu", j);
+     
+     });
+     
+     });
+     */
     NSLog(@"apply完成");
           
 }
 
+#pragma mark --  9.dispatch_suspend/dispatch_resume
+- (void)dispatchSuspendAndResume
+{
+    /*
+     挂起函数：dispatch_suspend(queue); 被追加到Dispatch Queue中的尚未执行的处理停止
+     回复函数：dispatch_resume(queue)p; 继续执行
+     
+     dispatch_suspend != 立即停止队列的运行
+     dispatch_suspend，dispatch_resume提供了“挂起、恢复”队列的功能，简单来说，就是可以暂停、恢复队列上的任务。但是这里的“挂起”，并不能保证可以立即停止队列上正在运行的block，看如下例子：
+     */
+    dispatch_queue_t queue = dispatch_queue_create("serial", DISPATCH_QUEUE_SERIAL);
+    //提交第一个block 延时5s打印
+    dispatch_async(queue, ^{
+        [NSThread sleepForTimeInterval:5];
+        NSLog(@"After 5 seconds...");
+    });
+    
+    //提交第二个block，也是延时5秒打印
+    dispatch_async(queue, ^{
+        
+        [NSThread sleepForTimeInterval:5];
+        
+        NSLog(@"After 5 seconds again...");
+        
+    });
+    
+    //延时一秒
+    
+    NSLog(@"sleep 1 second...");
+    
+    [NSThread sleepForTimeInterval:1];
+    
+    //挂起队列
+    
+    NSLog(@"suspend...");
+    
+    dispatch_suspend(queue);
+    
+    //延时10秒
+    
+    NSLog(@"sleep 10 second...");
+    
+    [NSThread sleepForTimeInterval:10];
+    
+    
+    //恢复队列
+    
+    NSLog(@"resume...");
+    
+    dispatch_resume(queue);
+    
+    /*
+     2016-06-15 22:30:15.905 FJSGCDDemo[20425:462101] sleep 1 second...
+     2016-06-15 22:30:16.906 FJSGCDDemo[20425:462101] suspend...
+     2016-06-15 22:30:16.906 FJSGCDDemo[20425:462101] sleep 10 second...
+     2016-06-15 22:30:20.907 FJSGCDDemo[20425:462215] After 5 seconds...
+     2016-06-15 22:30:26.908 FJSGCDDemo[20425:462101] resume...
+     2016-06-15 22:30:31.913 FJSGCDDemo[20425:462143] After 5 seconds again...
+     可知，在dispatch_suspend挂起队列后，第一个block还是在运行，并且正常输出。
+     
+     结合文档，我们可以得知，dispatch_suspend并不会立即暂停正在运行的block，而是在当前block执行完成后，暂停后续的block执行。
+     
+     所以下次想暂停正在队列上运行的block时，还是不要用dispatch_suspend了吧~
+     */
+}
 
 #pragma mark --  10.Dispatch Semaphore
 - (void)dispatchSemaphore
@@ -339,6 +501,41 @@
     
 }
 
+#pragma mark --  13.dispatch_set_context与dispatch_set_finalizer_f
+- (void)dispatchContextAndFinalizer
+{
+    /*
+     dispatch_set_context可以为队列添加上下文数据，但是因为GCD是C语言接口形式的，所以其context参数类型是“void *”。也就是说，我们创建context时有如下几种选择：
+     
+     用C语言的malloc创建context数据。
+     
+     用C++的new创建类对象。
+     
+     用Objective-C的对象，但是要用__bridge等关键字转为Core Foundation对象。
+     
+     以上所有创建context的方法都有一个必须的要求，就是都要释放内存！，无论是用free、delete还是CF的CFRelease，我们都要确保在队列不用的时候，释放context的内存，否则就会造成内存泄露。
+     
+     所以，使用dispatch_set_context的时候，最好结合dispatch_set_finalizer_f使用，为队列设置“析构函数”，在这个函数里面释放内存，大致如下：
+     
+     void cleanStaff(void *context) {
+     
+     //释放context的内存！
+     
+     //CFRelease(context);
+     
+     //free(context);
+     
+     //delete context;
+     
+     }
+     
+     ...
+     
+     //在队列创建后，设置其“析构函数”
+     
+     dispatch_set_finalizer_f(queue, cleanStaff);
+    */
+}
 
 
 
